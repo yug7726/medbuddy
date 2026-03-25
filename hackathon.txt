@@ -1,0 +1,1048 @@
+!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="MedBuddy - Your Health Friend. A multilingual prescription companion with reminders, emergency support, and privacy-first care flows."
+    />
+    <title>MedBuddy - Your Health Friend</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
+{
+    "name": "medbuddy-health-friend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "framer-motion": "^11.18.2",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.30.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}
+import{
+  Context,
+  PropsWithChildren,
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { AppSettings, Contact, Language, SessionUser, StoredUser, ToastMessage } from "../types";
+import { TranslationKey, defaultContacts, translations } from "../data/content";
+
+const LANGUAGE_KEY = "medbuddy-language";
+const USERS_KEY = "medbuddy-users";
+const SESSION_KEY = "medbuddy-session";
+const CONTACTS_KEY = "medbuddy-contacts";
+const SETTINGS_KEY = "medbuddy-settings";
+
+const defaultSettings: AppSettings = {
+  masterVolume: 0.88,
+  remindersEnabled: true,
+  emergencyOptIn: true,
+  privacyMode: true,
+};
+
+function readStorage<T>(key: string, fallback: T): T {
+  if (typeof window === "undefined") {
+    return fallback;
+  }
+
+  try {
+    const item = window.localStorage.getItem(key);
+    return item ? (JSON.parse(item) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function persistStorage<T>(key: string, value: T) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  window.localStorage.setItem(key, JSON.stringify(value));
+}
+
+function createId(prefix: string) {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return `${prefix}-${crypto.randomUUID()}`;
+  }
+
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+type LanguageContextValue = {
+  language: Language;
+  setLanguage: (language: Language) => void;
+  t: (key: TranslationKey) => string;
+};
+
+type AuthContextValue = {
+  user: SessionUser | null;
+  login: (email: string, password: string) => Promise<void>;
+  signup: (payload: { name: string; email: string; password: string; age?: string }) => Promise<void>;
+  logout: () => void;
+};
+
+type NotificationContextValue = {
+  toasts: ToastMessage[];
+  notify: (payload: Omit<ToastMessage, "id">) => void;
+  dismiss: (id: string) => void;
+};
+
+type AppDataContextValue = {
+  contacts: Contact[];
+  settings: AppSettings;
+  addContact: (contact: Omit<Contact, "id">) => void;
+  updateContact: (id: string, contact: Omit<Contact, "id">) => void;
+  deleteContact: (id: string) => void;
+  setPrimaryContact: (id: string) => void;
+  updateSettings: (patch: Partial<AppSettings>) => void;
+};
+
+const LanguageContext = createContext<LanguageContextValue | undefined>(undefined);
+const AuthContext = createContext<AuthContextValue | undefined>(undefined);
+const NotificationContext = createContext<NotificationContextValue | undefined>(undefined);
+const AppDataContext = createContext<AppDataContextValue | undefined>(undefined);
+
+export function AppProviders({ children }: PropsWithChildren) {
+  const [language, setLanguageState] = useState<Language>(() => readStorage(LANGUAGE_KEY, "en"));
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(() => readStorage(SESSION_KEY, null));
+  const [toasts, setToasts] = useState<ToastMessage[]>([]);
+  const [contacts, setContacts] = useState<Contact[]>(() => readStorage(CONTACTS_KEY, defaultContacts));
+  const [settings, setSettings] = useState<AppSettings>(() => readStorage(SETTINGS_KEY, defaultSettings));
+
+  useEffect(() => {
+    persistStorage(LANGUAGE_KEY, language);
+  }, [language]);
+
+  useEffect(() => {
+    persistStorage(SESSION_KEY, sessionUser);
+  }, [sessionUser]);
+
+  useEffect(() => {
+    persistStorage(CONTACTS_KEY, contacts);
+  }, [contacts]);
+
+  useEffect(() => {
+    persistStorage(SETTINGS_KEY, settings);
+  }, [settings]);
+
+  const setLanguage = useCallback((nextLanguage: Language) => {
+    setLanguageState(nextLanguage);
+  }, []);
+
+  const t = useCallback(
+    (key: TranslationKey) => {
+      return translations[language][key] ?? translations.en[key];
+    },
+    [language],
+  );
+
+  const login = useCallback(async (email: string, password: string) => {
+    const users = readStorage<StoredUser[]>(USERS_KEY, []);
+    const found = users.find((candidate) => candidate.email.toLowerCase() === email.toLowerCase() && candidate.password === password);
+    if (!found) {
+      throw new Error("login-failed");
+    }
+
+    setSessionUser({
+      id: found.id,
+      name: found.name,
+      email: found.email,
+      age: found.age,
+    });
+  }, []);
+
+  const signup = useCallback(async (payload: { name: string; email: string; password: string; age?: string }) => {
+    const users = readStorage<StoredUser[]>(USERS_KEY, []);
+    const exists = users.some((candidate) => candidate.email.toLowerCase() === payload.email.toLowerCase());
+
+    if (exists) {
+      throw new Error("signup-exists");
+    }
+
+    const nextUser: StoredUser = {
+      id: createId("user"),
+      name: payload.name,
+      email: payload.email,
+      password: payload.password,
+      age: payload.age,
+    };
+
+    const nextUsers = [...users, nextUser];
+    persistStorage(USERS_KEY, nextUsers);
+
+    setSessionUser({
+      id: nextUser.id,
+      name: nextUser.name,
+      email: nextUser.email,
+      age: nextUser.age,
+    });
+  }, []);
+
+  const logout = useCallback(() => {
+    setSessionUser(null);
+  }, []);
+
+  const notify = useCallback((payload: Omit<ToastMessage, "id">) => {
+    const toast = { id: createId("toast"), ...payload };
+    setToasts((current) => [...current, toast]);
+    window.setTimeout(() => {
+      setToasts((current) => current.filter((item) => item.id !== toast.id));
+    }, 4200);
+  }, []);
+
+  const dismiss = useCallback((id: string) => {
+    setToasts((current) => current.filter((item) => item.id !== id));
+  }, []);
+
+  const addContact = useCallback((contact: Omit<Contact, "id">) => {
+    setContacts((current) => {
+      const normalized = contact.isPrimary
+        ? current.map((entry) => (entry.type === contact.type ? { ...entry, isPrimary: false } : entry))
+        : current;
+
+      return [...normalized, { ...contact, id: createId("contact") }];
+    });
+  }, []);
+
+  const updateContact = useCallback((id: string, contact: Omit<Contact, "id">) => {
+    setContacts((current) => {
+      const normalized = contact.isPrimary
+        ? current.map((entry) => (entry.type === contact.type ? { ...entry, isPrimary: false } : entry))
+        : current;
+
+      return normalized.map((entry) => (entry.id === id ? { ...contact, id } : entry));
+    });
+  }, []);
+
+  const deleteContact = useCallback((id: string) => {
+    setContacts((current) => current.filter((entry) => entry.id !== id));
+  }, []);
+
+  const setPrimaryContact = useCallback((id: string) => {
+    setContacts((current) => {
+      const selected = current.find((entry) => entry.id === id);
+      if (!selected) {
+        return current;
+      }
+
+      return current.map((entry) => {
+        if (entry.type !== selected.type) {
+          return entry;
+        }
+
+        return {
+          ...entry,
+          isPrimary: entry.id === id,
+        };
+      });
+    });
+  }, []);
+
+  const updateSettings = useCallback((patch: Partial<AppSettings>) => {
+    setSettings((current) => ({ ...current, ...patch }));
+  }, []);
+
+  const languageValue = useMemo(
+    () => ({
+      language,
+      setLanguage,
+      t,
+    }),
+    [language, setLanguage, t],
+  );
+
+  const authValue = useMemo(
+    () => ({
+      user: sessionUser,
+      login,
+      signup,
+      logout,
+    }),
+    [sessionUser, login, signup, logout],
+  );
+
+  const notificationValue = useMemo(
+    () => ({
+      toasts,
+      notify,
+      dismiss,
+    }),
+    [toasts, notify, dismiss],
+  );
+
+  const dataValue = useMemo(
+    () => ({
+      contacts,
+      settings,
+      addContact,
+      updateContact,
+      deleteContact,
+      setPrimaryContact,
+      updateSettings,
+    }),
+    [contacts, settings, addContact, updateContact, deleteContact, setPrimaryContact, updateSettings],
+  );
+
+  return (
+    <LanguageContext.Provider value={languageValue}>
+      <AuthContext.Provider value={authValue}>
+        <NotificationContext.Provider value={notificationValue}>
+          <AppDataContext.Provider value={dataValue}>{children}</AppDataContext.Provider>
+        </NotificationContext.Provider>
+      </AuthContext.Provider>
+    </LanguageContext.Provider>
+  );
+}
+
+function useSafeContext<T>(context: Context<T | undefined>, label: string): T {
+  const value = useContext(context);
+  if (!value) {
+    throw new Error(`${label} must be used within AppProviders`);
+  }
+  return value;
+}
+
+export function useLanguage() {
+  return useSafeContext(LanguageContext, "useLanguage");
+}
+
+export function useAuth() {
+  return useSafeContext(AuthContext, "useAuth");
+}
+
+export function useNotifications() {
+  return useSafeContext(NotificationContext, "useNotifications");
+}
+
+export function useAppData() {
+  return useSafeContext(AppDataContext, "useAppData");
+}
+port { AnalysisKind, AnalysisResult, Contact, Language } from "../types";
+
+export const languageMeta = {
+  en: { label: "English", locale: "en-IN" },
+  hi: { label: "हिंदी", locale: "hi-IN" },
+  gu: { label: "ગુજરાતી", locale: "gu-IN" },
+} as const;
+
+export const translations = {
+  en: {
+    brandTitle: "MedBuddy",
+    brandSubtitle: "Your Health Friend",
+    navHome: "Home",
+    navDashboard: "Dashboard",
+    navContacts: "Doctors & Family",
+    navSettings: "Settings",
+    navLogin: "Login",
+    navSignup: "Sign up",
+    navLogout: "Log out",
+    homeEyebrow: "Calm care guidance for real families",
+    homeTitle: "Understand prescriptions, stay on time, and reach help fast.",
+    homeBody:
+      "MedBuddy turns medical instructions into simple language, gentle reminders, and one-tap emergency support across English, Hindi, and Gujarati.",
+    homePrimaryCta: "Open dashboard",
+    homeSecondaryCta: "Create account",
+    homeWellnessTitle: "Voice-first care guidance",
+    homeWellnessBody:
+      "Listen to instructions in your preferred language with clear playback controls and adjustable volume.",
+    emergencyBadge: "Emergency alert",
+    emergencyTitle: "Need urgent help?",
+    emergencyBody:
+      "Send a calm emergency alert that simulates an SMS to family and a call to your doctor after one confirmation.",
+    emergencyButton: "Send emergency alert",
+    emergencyModalTitle: "Confirm emergency alert",
+    emergencyModalBody:
+      "We will simulate notifying your primary family contact and doctor. You stay in control and can cancel before we start.",
+    emergencyConfirm: "Confirm alert",
+    emergencyCancel: "Cancel",
+    emergencySmsStep: "Sending SMS to family contact",
+    emergencyDoctorStep: "Calling doctor",
+    emergencySuccess: "Your family and doctor are being notified",
+    trustTitle: "Designed for trust, not panic",
+    trustBody:
+      "Pastel visuals, clear actions, and privacy-first defaults help people act quickly without feeling overwhelmed.",
+    trustPointOne: "Language stays consistent across pages and voice.",
+    trustPointTwo: "Emergency flows are user-controlled.",
+    trustPointThree: "Stored locally in your browser for privacy.",
+    authLoginTitle: "Welcome back",
+    authLoginBody: "Sign in to continue your care plan, reminders, and saved contacts.",
+    authSignupTitle: "Create your MedBuddy account",
+    authSignupBody:
+      "Set up your profile to unlock multilingual prescription help, emergency alerts, and follow-up reminders.",
+    nameLabel: "Full name",
+    emailLabel: "Email address",
+    passwordLabel: "Password",
+    confirmPasswordLabel: "Confirm password",
+    ageLabel: "Age",
+    loginButton: "Log in",
+    signupButton: "Create account",
+    authSwitchLogin: "Already have an account?",
+    authSwitchSignup: "Need a new account?",
+    authInvalidEmail: "Please enter a valid email address.",
+    authPasswordShort: "Password must be at least 6 characters.",
+    authPasswordMismatch: "Passwords do not match.",
+    authRequired: "Please fill in all required fields.",
+    authLoginError: "Email or password does not match our records.",
+    authSignupExists: "An account with this email already exists.",
+    authSuccess: "You are signed in and ready to go.",
+    dashboardGreeting: "Care dashboard",
+    dashboardTitle: "Understand your prescription with confidence",
+    dashboardBody:
+      "Paste a prescription or upload a file. MedBuddy simulates analysis, simplifies the plan, and prepares reminders you can trust.",
+    languageLabel: "Language",
+    prescriptionLabel: "Prescription notes",
+    prescriptionPlaceholder:
+      "Paste the prescription here. Example: Tab Paracetamol 650 mg SOS for fever, Azithromycin 500 mg once daily after food for 3 days.",
+    analyzeButton: "Understand prescription",
+    analyzingLabel: "Understanding your prescription...",
+    uploadTitle: "Upload prescription",
+    uploadBody: "Drag and drop JPG, PNG, or PDF files to simulate OCR and auto-fill the prescription box.",
+    uploadIdle: "Drop your file here or browse",
+    uploadActive: "Release to upload",
+    uploadReading: "Reading prescription from image...",
+    uploadUnsupported: "Unsupported file. Please upload JPG, PNG, or PDF.",
+    uploadGeneric: "Upload failed. Please retry.",
+    uploadRetry: "Retry",
+    uploadRemove: "Remove",
+    uploadChange: "Change",
+    uploadSuccess: "Prescription text extracted and added to the form.",
+    resultSummary: "Quick summary",
+    resultDiagnosis: "Likely diagnosis",
+    resultMedicines: "Medicines and timing",
+    resultSideEffects: "Possible side effects",
+    resultWarnings: "Warning signs",
+    resultChecklist: "Follow-up checklist",
+    resultFollowUp: "Next steps",
+    resultVoice: "Listen in your language",
+    reminderDisabled: "Enable reminders in Settings to schedule notifications.",
+    reminderScheduledTitle: "Reminder scheduled",
+    reminderScheduledBody: "We will pop up a care reminder shortly.",
+    checklistDone: "Checklist updated",
+    notificationMedicine: "Take medicine at 8 PM",
+    notificationWater: "Drink water reminder",
+    contactsTitle: "Doctors and family contacts",
+    contactsBody:
+      "Keep the people who support your care easy to reach. Add, edit, remove, or mark a primary contact anytime.",
+    addContactTitle: "Add contact",
+    editContactTitle: "Edit contact",
+    contactTypeLabel: "Contact type",
+    doctorLabel: "Doctor",
+    familyLabel: "Family",
+    relationLabel: "Relation / role",
+    phoneLabel: "Phone number",
+    specialtyLabel: "Specialty",
+    notesLabel: "Notes",
+    primaryLabel: "Primary contact",
+    saveContact: "Save contact",
+    updateContact: "Update contact",
+    cancelEdit: "Cancel edit",
+    contactSaved: "Contact saved successfully.",
+    contactDeleted: "Contact deleted.",
+    primarySaved: "Primary contact updated.",
+    noContacts: "No contacts yet. Add your first doctor or family member.",
+    filterAll: "All",
+    filterDoctors: "Doctors",
+    filterFamily: "Family",
+    settingsTitle: "Personal settings",
+    settingsBody:
+      "Adjust your language, reminder behavior, emergency preferences, and audio comfort from one place.",
+    settingsVolume: "Master volume",
+    settingsReminders: "Medication reminders",
+    settingsEmergency: "Emergency alert access",
+    settingsPrivacy: "Privacy-first mode",
+    settingsPreviewTitle: "Audio preview",
+    settingsPreviewBody:
+      "This preview reads out a short health note using the selected language and voice.",
+    settingsPrivacyTitle: "Trust and privacy",
+    settingsPrivacyBody:
+      "MedBuddy stores data locally in this demo, avoids unnecessary collection, and always reminds users that it is not a replacement for licensed medical advice.",
+    settingsPreviewReminder: "Preview reminder toast",
+    disclaimer: "MedBuddy supports understanding and planning. It is not a replacement for doctors or emergency services.",
+    audioUnavailable: "Audio not available, please try again",
+    playLabel: "Play",
+    pauseLabel: "Pause",
+    replayLabel: "Replay",
+    volumeLabel: "Volume",
+    ageHelper: "Age helps tailor the summary and follow-up advice.",
+    footerNote: "Built for clarity, empathy, and real-world health moments.",
+  },
+  hi: {
+    brandTitle: "MedBuddy",
+    brandSubtitle: "आपका हेल्थ फ्रेंड",
+    navHome: "होम",
+    navDashboard: "डैशबोर्ड",
+    navContacts: "डॉक्टर और परिवार",
+    navSettings: "सेटिंग्स",
+    navLogin: "लॉगिन",
+    navSignup: "साइन अप",
+    navLogout: "लॉग आउट",
+    homeEyebrow: "परिवारों के लिए शांत और आसान देखभाल",
+    homeTitle: "प्रिस्क्रिप्शन समझें, समय पर रहें, और मदद तक जल्दी पहुंचें।",
+    homeBody:
+      "MedBuddy अंग्रेज़ी, हिंदी और गुजराती में मेडिकल निर्देशों को सरल भाषा, हल्के रिमाइंडर और एक-टैप इमरजेंसी सपोर्ट में बदलता है।",
+    homePrimaryCta: "डैशबोर्ड खोलें",
+    homeSecondaryCta: "अकाउंट बनाएं",
+    homeWellnessTitle: "आवाज़ के साथ देखभाल",
+    homeWellnessBody:
+      "अपनी पसंदीदा भाषा में साफ़ प्लेबैक कंट्रोल और एडजस्टेबल वॉल्यूम के साथ निर्देश सुनें।",
+    emergencyBadge: "इमरजेंसी अलर्ट",
+    emergencyTitle: "तुरंत मदद चाहिए?",
+    emergencyBody:
+      "एक कन्फर्मेशन के बाद परिवार को SMS और डॉक्टर को कॉल का शांत सिमुलेशन भेजें।",
+    emergencyButton: "इमरजेंसी अलर्ट भेजें",
+    emergencyModalTitle: "इमरजेंसी अलर्ट की पुष्टि करें",
+    emergencyModalBody:
+      "हम आपके प्राइमरी परिवार संपर्क और डॉक्टर को सूचित करने का सिमुलेशन करेंगे। शुरुआत से पहले आप इसे रद्द कर सकते हैं।",
+    emergencyConfirm: "अलर्ट कन्फर्म करें",
+    emergencyCancel: "रद्द करें",
+    emergencySmsStep: "परिवार संपर्क को SMS भेजा जा रहा है",
+    emergencyDoctorStep: "डॉक्टर को कॉल की जा रही है",
+    emergencySuccess: "आपके परिवार और डॉक्टर को सूचित किया जा रहा है",
+    trustTitle: "घबराहट नहीं, भरोसे के लिए डिज़ाइन",
+    trustBody:
+      "पेस्टल विज़ुअल, स्पष्ट एक्शन और प्राइवेसी-फर्स्ट डिफॉल्ट लोगों को शांत रहते हुए जल्दी कदम उठाने में मदद करते हैं।",
+    trustPointOne: "भाषा सभी पेज और आवाज़ में एक जैसी रहती है।",
+    trustPointTwo: "इमरजेंसी फ्लो पूरी तरह यूज़र के नियंत्रण में है।",
+    trustPointThree: "डेटा गोपनीयता के लिए ब्राउज़र में लोकली स्टोर होता है।",
+    authLoginTitle: "वापसी पर स्वागत है",
+    authLoginBody: "अपनी केयर प्लान, रिमाइंडर और सेव किए गए कॉन्टैक्ट देखने के लिए साइन इन करें।",
+    authSignupTitle: "अपना MedBuddy अकाउंट बनाएं",
+    authSignupBody:
+      "मल्टीलिंगुअल प्रिस्क्रिप्शन हेल्प, इमरजेंसी अलर्ट और फॉलो-अप रिमाइंडर के लिए प्रोफाइल सेट करें।",
+    nameLabel: "पूरा नाम",
+    emailLabel: "ईमेल पता",
+    passwordLabel: "पासवर्ड",
+    confirmPasswordLabel: "पासवर्ड की पुष्टि करें",
+    ageLabel: "उम्र",
+    loginButton: "लॉगिन करें",
+    signupButton: "अकाउंट बनाएं",
+    authSwitchLogin: "क्या आपका अकाउंट पहले से है?",
+    authSwitchSignup: "नया अकाउंट चाहिए?",
+    authInvalidEmail: "कृपया सही ईमेल पता दर्ज करें।",
+    authPasswordShort: "पासवर्ड कम से कम 6 अक्षरों का होना चाहिए।",
+    authPasswordMismatch: "पासवर्ड मेल नहीं खा रहे हैं।",
+    authRequired: "कृपया सभी ज़रूरी फ़ील्ड भरें।",
+    authLoginError: "ईमेल या पासवर्ड मेल नहीं खाता।",
+    authSignupExists: "इस ईमेल से अकाउंट पहले से मौजूद है।",
+    authSuccess: "आप साइन इन हो चुके हैं और तैयार हैं।",
+    dashboardGreeting: "केयर डैशबोर्ड",
+    dashboardTitle: "अपने प्रिस्क्रिप्शन को आत्मविश्वास के साथ समझें",
+    dashboardBody:
+      "प्रिस्क्रिप्शन पेस्ट करें या फ़ाइल अपलोड करें। MedBuddy विश्लेषण का सिमुलेशन करता है, प्लान को सरल बनाता है और भरोसेमंद रिमाइंडर तैयार करता है।",
+    languageLabel: "भाषा",
+    prescriptionLabel: "प्रिस्क्रिप्शन नोट्स",
+    prescriptionPlaceholder:
+      "यहां प्रिस्क्रिप्शन पेस्ट करें। उदाहरण: Tab Paracetamol 650 mg SOS for fever, Azithromycin 500 mg once daily after food for 3 days.",
+    analyzeButton: "प्रिस्क्रिप्शन समझें",
+    analyzingLabel: "आपका प्रिस्क्रिप्शन समझा जा रहा है...",
+    uploadTitle: "प्रिस्क्रिप्शन अपलोड करें",
+    uploadBody: "JPG, PNG या PDF ड्रैग और ड्रॉप करें। OCR सिमुलेशन टेक्स्ट निकालकर बॉक्स में भर देगा।",
+    uploadIdle: "फ़ाइल यहां छोड़ें या चुनें",
+    uploadActive: "अपलोड करने के लिए छोड़ें",
+    uploadReading: "इमेज से प्रिस्क्रिप्शन पढ़ा जा रहा है...",
+    uploadUnsupported: "यह फ़ाइल समर्थित नहीं है। JPG, PNG या PDF अपलोड करें।",
+    uploadGeneric: "अपलोड असफल रहा। कृपया फिर से कोशिश करें।",
+    uploadRetry: "फिर से कोशिश करें",
+    uploadRemove: "हटाएं",
+    uploadChange: "बदलें",
+    uploadSuccess: "प्रिस्क्रिप्शन टेक्स्ट निकालकर फॉर्म में जोड़ दिया गया है।",
+    resultSummary: "त्वरित सार",
+    resultDiagnosis: "संभावित निदान",
+    resultMedicines: "दवाइयां और समय",
+    resultSideEffects: "संभावित साइड इफेक्ट्स",
+    resultWarnings: "चेतावनी संकेत",
+    resultChecklist: "फॉलो-अप चेकलिस्ट",
+    resultFollowUp: "अगले कदम",
+    resultVoice: "अपनी भाषा में सुनें",
+    reminderDisabled: "नोटिफिकेशन शेड्यूल करने के लिए सेटिंग्स में रिमाइंडर चालू करें।",
+    reminderScheduledTitle: "रिमाइंडर सेट हुआ",
+    reminderScheduledBody: "थोड़ी देर में एक केयर रिमाइंडर पॉप-अप दिखेगा।",
+    checklistDone: "चेकलिस्ट अपडेट हो गई",
+    notificationMedicine: "रात 8 बजे दवा लें",
+    notificationWater: "पानी पीने का रिमाइंडर",
+    contactsTitle: "डॉक्टर और परिवार के कॉन्टैक्ट",
+    contactsBody:
+      "जो लोग आपकी देखभाल में मदद करते हैं उन्हें हमेशा आसान पहुंच में रखें। कभी भी जोड़ें, बदलें, हटाएं या प्राइमरी मार्क करें।",
+    addContactTitle: "कॉन्टैक्ट जोड़ें",
+    editContactTitle: "कॉन्टैक्ट संपादित करें",
+    contactTypeLabel: "कॉन्टैक्ट प्रकार",
+    doctorLabel: "डॉक्टर",
+    familyLabel: "परिवार",
+    relationLabel: "रिश्ता / भूमिका",
+    phoneLabel: "फोन नंबर",
+    specialtyLabel: "विशेषज्ञता",
+    notesLabel: "नोट्स",
+    primaryLabel: "प्राइमरी कॉन्टैक्ट",
+    saveContact: "कॉन्टैक्ट सेव करें",
+    updateContact: "कॉन्टैक्ट अपडेट करें",
+    cancelEdit: "संपादन रद्द करें",
+    contactSaved: "कॉन्टैक्ट सफलतापूर्वक सेव हुआ।",
+    contactDeleted: "कॉन्टैक्ट हटाया गया।",
+    primarySaved: "प्राइमरी कॉन्टैक्ट अपडेट हुआ।",
+    noContacts: "अभी कोई कॉन्टैक्ट नहीं है। अपना पहला डॉक्टर या परिवार सदस्य जोड़ें।",
+    filterAll: "सभी",
+    filterDoctors: "डॉक्टर",
+    filterFamily: "परिवार",
+    settingsTitle: "व्यक्तिगत सेटिंग्स",
+    settingsBody:
+      "एक ही जगह से अपनी भाषा, रिमाइंडर, इमरजेंसी विकल्प और ऑडियो आराम को समायोजित करें।",
+    settingsVolume: "मास्टर वॉल्यूम",
+    settingsReminders: "दवा रिमाइंडर",
+    settingsEmergency: "इमरजेंसी अलर्ट एक्सेस",
+    settingsPrivacy: "प्राइवेसी-फर्स्ट मोड",
+    settingsPreviewTitle: "ऑडियो प्रीव्यू",
+    settingsPreviewBody: "यह प्रीव्यू चुनी गई भाषा और आवाज़ में छोटा हेल्थ नोट पढ़ेगा।",
+    settingsPrivacyTitle: "भरोसा और गोपनीयता",
+    settingsPrivacyBody:
+      "इस डेमो में MedBuddy डेटा लोकली स्टोर करता है, अनावश्यक डेटा नहीं लेता और हमेशा याद दिलाता है कि यह डॉक्टर की सलाह का विकल्प नहीं है।",
+    settingsPreviewReminder: "रिमाइंडर टोस्ट प्रीव्यू",
+    disclaimer: "MedBuddy समझ और योजना में मदद करता है। यह डॉक्टरों या इमरजेंसी सेवाओं का विकल्प नहीं है।",
+    audioUnavailable: "ऑडियो उपलब्ध नहीं है, कृपया फिर से कोशिश करें",
+    playLabel: "प्ले",
+    pauseLabel: "पॉज़",
+    replayLabel: "फिर से चलाएं",
+    volumeLabel: "वॉल्यूम",
+    ageHelper: "उम्र सारांश और फॉलो-अप सलाह को बेहतर बनाती है।",
+    footerNote: "स्पष्टता, सहानुभूति और वास्तविक हेल्थ मोमेंट्स के लिए बनाया गया।",
+  },
+  gu: {
+    brandTitle: "MedBuddy",
+    brandSubtitle: "તમારો હેલ્થ ફ્રેન્ડ",
+    navHome: "હોમ",
+    navDashboard: "ડેશબોર્ડ",
+    navContacts: "ડોક્ટર અને પરિવાર",
+    navSettings: "સેટિંગ્સ",
+    navLogin: "લૉગિન",
+    navSignup: "સાઇન અપ",
+    navLogout: "લૉગ આઉટ",
+    homeEyebrow: "પરિવારો માટે શાંત અને સરળ કાળજી",
+    homeTitle: "પ્રિસ્ક્રિપ્શન સમજો, સમયસર રહો અને મદદ ઝડપથી મેળવો.",
+    homeBody:
+      "MedBuddy અંગ્રેજી, હિન્દી અને ગુજરાતી ભાષામાં મેડિકલ સૂચનાઓને સરળ ભાષા, હળવા રિમાઇન્ડર અને એક-ટૅપ ઇમરજન્સી સપોર્ટમાં ફેરવે છે.",
+    homePrimaryCta: "ડેશબોર્ડ ખોલો",
+    homeSecondaryCta: "એકાઉન્ટ બનાવો",
+    homeWellnessTitle: "વૉઇસ સાથે કાળજી",
+    homeWellnessBody:
+      "તમારી પસંદની ભાષામાં સ્પષ્ટ પ્લેબેક કંટ્રોલ અને એડજસ્ટેબલ વોલ્યુમ સાથે સૂચનાઓ સાંભળો.",
+    emergencyBadge: "ઇમરજન્સી અલર્ટ",
+    emergencyTitle: "તાત્કાલિક મદદ જોઈએ છે?",
+    emergencyBody:
+      "એક કન્ફર્મેશન પછી પરિવારને SMS અને ડૉક્ટરને કૉલનું શાંત સિમ્યુલેશન મોકલો.",
+    emergencyButton: "ઇમરજન્સી અલર્ટ મોકલો",
+    emergencyModalTitle: "ઇમરજન્સી અલર્ટ કન્ફર્મ કરો",
+    emergencyModalBody:
+      "અમે તમારા પ્રાથમિક પરિવાર સંપર્ક અને ડૉક્ટરને સૂચિત કરવાની પ્રક્રિયાનું સિમ્યુલેશન કરીશું. શરૂઆત પહેલાં તમે રદ કરી શકો છો.",
+    emergencyConfirm: "અલર્ટ કન્ફર્મ કરો",
+    emergencyCancel: "રદ કરો",
+    emergencySmsStep: "પરિવાર સંપર્કને SMS મોકલાઈ રહ્યો છે",
+    emergencyDoctorStep: "ડૉક્ટરને કૉલ થઈ રહ્યો છે",
+    emergencySuccess: "તમારા પરિવાર અને ડૉક્ટરને જાણ કરવામાં આવી રહી છે",
+    trustTitle: "ગભરાટ નહીં, વિશ્વાસ માટે ડિઝાઇન",
+    trustBody:
+      "પેસ્ટલ વિઝ્યુઅલ્સ, સ્પષ્ટ એક્શન અને પ્રાઇવસી-ફર્સ્ટ ડિફોલ્ટ લોકોને શાંતિથી ઝડપથી પગલું ભરવામાં મદદ કરે છે.",
+    trustPointOne: "ભાષા દરેક પેજ અને અવાજમાં એકસરખી રહે છે.",
+    trustPointTwo: "ઇમરજન્સી ફ્લો સંપૂર્ણપણે યૂઝરના નિયંત્રણમાં છે.",
+    trustPointThree: "ગોપનીયતા માટે ડેટા બ્રાઉઝરમાં લોકલી સ્ટોર થાય છે.",
+    authLoginTitle: "પાછા આવકાર",
+    authLoginBody: "તમારી કેર પ્લાન, રિમાઇન્ડર અને સેવ કરેલા સંપર્કો જોવા માટે સાઇન ઇન કરો.",
+    authSignupTitle: "તમારું MedBuddy એકાઉન્ટ બનાવો",
+    authSignupBody:
+      "મલ્ટીલિંગ્યુઅલ પ્રિસ્ક્રિપ્શન મદદ, ઇમરજન્સી અલર્ટ અને ફોલો-અપ રિમાઇન્ડર માટે તમારી પ્રોફાઇલ સેટ કરો.",
+    nameLabel: "પૂરું નામ",
+    emailLabel: "ઇમેઇલ સરનામું",
+    passwordLabel: "પાસવર્ડ",
+    confirmPasswordLabel: "પાસવર્ડ કન્ફર્મ કરો",
+    ageLabel: "ઉંમર",
+    loginButton: "લૉગિન કરો",
+    signupButton: "એકાઉન્ટ બનાવો",
+    authSwitchLogin: "પહેલેથી એકાઉન્ટ છે?",
+    authSwitchSignup: "નવું એકાઉન્ટ જોઈએ છે?",
+    authInvalidEmail: "કૃપા કરીને માન્ય ઇમેઇલ દાખલ કરો.",
+    authPasswordShort: "પાસવર્ડ ઓછામાં ઓછો 6 અક્ષરનો હોવો જોઈએ.",
+    authPasswordMismatch: "પાસવર્ડ મેળ ખાતા નથી.",
+    authRequired: "કૃપા કરીને બધા જરૂરી ક્ષેત્રો ભરો.",
+    authLoginError: "ઇમેઇલ અથવા પાસવર્ડ મેળ ખાતા નથી.",
+    authSignupExists: "આ ઇમેઇલથી એકાઉન્ટ પહેલેથી હાજર છે.",
+    authSuccess: "તમે સાઇન ઇન થઈ ગયા છો અને તૈયાર છો.",
+    dashboardGreeting: "કેર ડેશબોર્ડ",
+    dashboardTitle: "તમારું પ્રિસ્ક્રિપ્શન આત્મવિશ્વાસથી સમજો",
+    dashboardBody:
+      "પ્રિસ્ક્રિપ્શન પેસ્ટ કરો અથવા ફાઇલ અપલોડ કરો. MedBuddy વિશ્લેષણનું સિમ્યુલેશન કરે છે, પ્લાન સરળ બનાવે છે અને વિશ્વસનીય રિમાઇન્ડર તૈયાર કરે છે.",
+    languageLabel: "ભાષા",
+    prescriptionLabel: "પ્રિસ્ક્રિપ્શન નોંધો",
+    prescriptionPlaceholder:
+      "અહીં પ્રિસ્ક્રિપ્શન પેસ્ટ કરો. ઉદાહરણ: Tab Paracetamol 650 mg SOS for fever, Azithromycin 500 mg once daily after food for 3 days.",
+    analyzeButton: "પ્રિસ્ક્રિપ્શન સમજો",
+    analyzingLabel: "તમારું પ્રિસ્ક્રિપ્શન સમજાઈ રહ્યું છે...",
+    uploadTitle: "પ્રિસ્ક્રિપ્શન અપલોડ કરો",
+    uploadBody: "JPG, PNG અથવા PDF ડ્રેગ અને ડ્રોપ કરો. OCR સિમ્યુલેશન ટેક્સ્ટ કાઢીને બોક્સમાં ભરી દેશે.",
+    uploadIdle: "ફાઇલ અહીં છોડો અથવા પસંદ કરો",
+    uploadActive: "અપલોડ કરવા છોડો",
+    uploadReading: "ઇમેજમાંથી પ્રિસ્ક્રિપ્શન વાંચાઈ રહ્યું છે...",
+    uploadUnsupported: "આ ફાઇલ સપોર્ટેડ નથી. JPG, PNG અથવા PDF અપલોડ કરો.",
+    uploadGeneric: "અપલોડ નિષ્ફળ ગયું. કૃપા કરીને ફરી પ્રયાસ કરો.",
+    uploadRetry: "ફરી પ્રયાસ કરો",
+    uploadRemove: "દૂર કરો",
+    uploadChange: "બદલો",
+    uploadSuccess: "પ્રિસ્ક્રિપ્શન ટેક્સ્ટ કાઢીને ફોર્મમાં ઉમેરવામાં આવ્યું છે.",
+    resultSummary: "ઝડપી સારાંશ",
+    resultDiagnosis: "સંભવિત નિદાન",
+    resultMedicines: "દવાઓ અને સમય",
+    resultSideEffects: "સંભવિત સાઇડ ઇફેક્ટ્સ",
+    resultWarnings: "ચેતવણીના લક્ષણો",
+    resultChecklist: "ફોલો-અપ ચેકલિસ્ટ",
+    resultFollowUp: "આગળના પગલાં",
+    resultVoice: "તમારી ભાષામાં સાંભળો",
+    reminderDisabled: "નોટિફિકેશન શેડ્યૂલ કરવા માટે સેટિંગ્સમાં રિમાઇન્ડર ચાલુ કરો.",
+    reminderScheduledTitle: "રિમાઇન્ડર સેટ થયું",
+    reminderScheduledBody: "થોડા સમયમાં એક કેર રિમાઇન્ડર પોપ-અપ દેખાશે.",
+    checklistDone: "ચેકલિસ્ટ અપડેટ થયું",
+    notificationMedicine: "રાત્રે 8 વાગ્યે દવા લો",
+    notificationWater: "પાણી પીવાનું રિમાઇન્ડર",
+    contactsTitle: "ડોક્ટર અને પરિવાર સંપર્કો",
+    contactsBody:
+      "તમારી કાળજીમાં મદદ કરતા લોકોને સરળ પહોંચમાં રાખો. કોઈ પણ સમયે ઉમેરો, બદલો, દૂર કરો અથવા પ્રાથમિક તરીકે માર્ક કરો.",
+    addContactTitle: "સંપર્ક ઉમેરો",
+    editContactTitle: "સંપર્ક સંપાદિત કરો",
+    contactTypeLabel: "સંપર્ક પ્રકાર",
+    doctorLabel: "ડોક્ટર",
+    familyLabel: "પરિવાર",
+    relationLabel: "સંબંધ / ભૂમિકા",
+    phoneLabel: "ફોન નંબર",
+    specialtyLabel: "સ્પેશિયાલિટી",
+    notesLabel: "નોંધો",
+    primaryLabel: "પ્રાથમિક સંપર્ક",
+    saveContact: "સંપર્ક સેવ કરો",
+    updateContact: "સંપર્ક અપડેટ કરો",
+    cancelEdit: "સંપાદન રદ કરો",
+    contactSaved: "સંપર્ક સફળતાપૂર્વક સેવ થયો.",
+    contactDeleted: "સંપર્ક દૂર કર્યો.",
+    primarySaved: "પ્રાથમિક સંપર્ક અપડેટ થયો.",
+    noContacts: "હજુ સુધી કોઈ સંપર્ક નથી. તમારો પહેલો ડોક્ટર અથવા પરિવાર સભ્ય ઉમેરો.",
+    filterAll: "બધા",
+    filterDoctors: "ડોક્ટર",
+    filterFamily: "પરિવાર",
+    settingsTitle: "વ્યક્તિગત સેટિંગ્સ",
+    settingsBody:
+      "એક જ જગ્યાએથી તમારી ભાષા, રિમાઇન્ડર, ઇમરજન્સી વિકલ્પો અને ઑડિયો આરામને એડજસ્ટ કરો.",
+    settingsVolume: "માસ્ટર વોલ્યુમ",
+    settingsReminders: "દવા રિમાઇન્ડર",
+    settingsEmergency: "ઇમરજન્સી અલર્ટ ઍક્સેસ",
+    settingsPrivacy: "પ્રાઇવસી-ફર્સ્ટ મોડ",
+    settingsPreviewTitle: "ઓડિયો પ્રિવ્યૂ",
+    settingsPreviewBody: "આ પ્રિવ્યૂ પસંદ કરેલી ભાષા અને અવાજમાં નાનું હેલ્થ નોટ વાંચશે.",
+    settingsPrivacyTitle: "વિશ્વાસ અને ગોપનીયતા",
+    settingsPrivacyBody:
+      "આ ડેમોમાં MedBuddy ડેટા લોકલી સ્ટોર કરે છે, અનાવશ્યક ડેટા એકત્રિત કરતું નથી અને હંમેશા યાદ અપાવે છે કે તે ડૉક્ટરની સલાહનો વિકલ્પ નથી.",
+    settingsPreviewReminder: "રિમાઇન્ડર ટોસ્ટ પ્રિવ્યૂ",
+    disclaimer: "MedBuddy સમજણ અને આયોજનમાં મદદ કરે છે. તે ડૉક્ટર અથવા ઇમરજન્સી સેવાઓનો વિકલ્પ નથી.",
+    audioUnavailable: "ઑડિયો ઉપલબ્ધ નથી, કૃપા કરીને ફરી પ્રયાસ કરો",
+    playLabel: "પ્લે",
+    pauseLabel: "પોઝ",
+    replayLabel: "ફરી વગાડો",
+    volumeLabel: "વોલ્યુમ",
+    ageHelper: "ઉંમર સારાંશ અને ફોલો-અપ સલાહને વધુ યોગ્ય બનાવે છે.",
+    footerNote: "સ્પષ્ટતા, સહાનુભૂતિ અને સાચી હેલ્થ મોમેન્ટ્સ માટે બનાવ્યું છે.",
+  },
+} as const;
+
+export type TranslationKey = keyof typeof translations.en;
+
+export const defaultContacts: Contact[] = [
+  {
+    id: "doctor-primary",
+    type: "doctor",
+    name: "Dr. Meera Shah",
+    relation: "Primary physician",
+    phone: "+91 98989 21021",
+    specialty: "Internal medicine",
+    notes: "Best for medicine reviews and urgent follow-up.",
+    isPrimary: true,
+  },
+  {
+    id: "family-primary",
+    type: "family",
+    name: "Rohan Patel",
+    relation: "Son",
+    phone: "+91 98765 44321",
+    notes: "Lives nearby and responds quickly.",
+    isPrimary: true,
+  },
+  {
+    id: "family-secondary",
+    type: "family",
+    name: "Kavita Patel",
+    relation: "Daughter",
+    phone: "+91 98111 20444",
+    notes: "Can help with pharmacy pickups.",
+    isPrimary: false,
+  },
+];
+
+const ocrSamples = {
+  en: "Patient complains of fever for 2 days. Tab Paracetamol 650 mg SOS after food. Tab Azithromycin 500 mg once daily for 3 days. Drink plenty of fluids. Review if fever persists or breathing worsens.",
+  hi: "रोगी को 2 दिनों से बुखार है। Tab Paracetamol 650 mg SOS after food. Tab Azithromycin 500 mg once daily for 3 days. पर्याप्त पानी पिएं। बुखार बना रहे या सांस बढ़े तो रिव्यू कराएं।",
+  gu: "દર્દીને 2 દિવસથી તાવ છે. Tab Paracetamol 650 mg SOS after food. Tab Azithromycin 500 mg once daily for 3 days. પૂરતું પાણી પીવું. તાવ ચાલુ રહે અથવા શ્વાસ વધારે થાય તો રિવ્યુ કરાવો.",
+} satisfies Record<Language, string>;
+
+const homeVoiceText = {
+  en: "You are safe with MedBuddy. Your care plan, reminders, and emergency support stay simple and calm.",
+  hi: "आप MedBuddy के साथ सुरक्षित हैं। आपकी केयर प्लान, रिमाइंडर और इमरजेंसी सपोर्ट सरल और शांत रहते हैं।",
+  gu: "તમે MedBuddy સાથે સુરક્ષિત છો. તમારી કેર પ્લાન, રિમાઇન્ડર અને ઇમરજન્સી સપોર્ટ સરળ અને શાંત રહે છે.",
+} satisfies Record<Language, string>;
+
+const settingsVoiceText = {
+  en: "This is your MedBuddy audio preview. Adjust the volume until the voice feels comfortable and easy to follow.",
+  hi: "यह आपका MedBuddy ऑडियो प्रीव्यू है। आवाज़ आपके लिए आरामदायक और स्पष्ट लगे तब तक वॉल्यूम समायोजित करें।",
+  gu: "આ તમારું MedBuddy ઑડિયો પ્રિવ્યૂ છે. અવાજ આરામદાયક અને સ્પષ્ટ લાગે ત્યાં સુધી વોલ્યુમ એડજસ્ટ કરો.",
+} satisfies Record<Language, string>;
+const analysisCatalog: Record<Language, Record<AnalysisKind, AnalysisResult>> = {
+  en: {
+    infection: {
+      diagnosis: "Upper respiratory infection with fever",
+      summary:
+        "The prescription suggests a short infection plan focused on fever relief, hydration, and follow-up if breathing or fever gets worse.",
+      medicines: [
+        { id: "med-1", name: "Paracetamol 650 mg", timing: "Only if fever, after food", purpose: "Reduces fever and body ache" },
+        { id: "med-2", name: "Azithromycin 500 mg", timing: "Once daily after dinner for 3 days", purpose: "Treats the suspected infection" },
+      ],
+      sideEffects: ["Mild stomach upset", "Loose stools", "Sleepiness if fever is high"],
+      warningSigns: ["Breathing trouble", "Fever above 102 F for more than 2 days", "Severe weakness or confusion"],
+      checklist: [
+        { id: "check-1", label: "Take Azithromycin after dinner tonight", reminderText: "Take medicine at 8 PM" },
+        { id: "check-2", label: "Drink at least 8 glasses of water", reminderText: "Drink water reminder" },
+        { id: "check-3", label: "Check temperature again tomorrow morning", reminderText: "Check temperature reminder" },
+      ],
+      followUp: ["Review with doctor in 2-3 days if fever continues", "Seek urgent care if breathing worsens"],
+      voiceText:
+        "This prescription likely treats an upper respiratory infection. Take Paracetamol for fever, Azithromycin after dinner, drink plenty of fluids, and watch for breathing trouble.",
+    },
+    diabetes: {
+      diagnosis: "Type 2 diabetes follow-up plan",
+      summary:
+        "The prescription looks like a blood sugar control plan with daily tablets, meal timing, hydration, and monitoring for dizziness or unusual fatigue.",
+      medicines: [
+        { id: "med-1", name: "Metformin 500 mg", timing: "After breakfast and dinner", purpose: "Helps control blood sugar" },
+        { id: "med-2", name: "Glimepiride 1 mg", timing: "15 minutes before breakfast", purpose: "Supports morning glucose control" },
+      ],
+      sideEffects: ["Low sugar feeling", "Nausea", "Mild stomach discomfort"],
+      warningSigns: ["Sweating with shakiness", "Blurred vision", "Very high thirst with weakness"],
+      checklist: [
+        { id: "check-1", label: "Take Glimepiride before breakfast", reminderText: "Take morning medicine at 8 AM" },
+        { id: "check-2", label: "Log post-dinner sugar reading", reminderText: "Check sugar after dinner" },
+        { id: "check-3", label: "Keep a small snack nearby", reminderText: "Carry a snack reminder" },
+      ],
+      followUp: ["Review fasting sugar in one week", "Contact doctor if repeated low sugar episodes happen"],
+      voiceText:
+        "This appears to be a diabetes follow-up plan. Take Glimepiride before breakfast, Metformin after meals, and keep monitoring sugar levels and hydration.",
+    },
+    bloodPressure: {
+      diagnosis: "High blood pressure maintenance plan",
+      summary:
+        "The prescription suggests a routine blood pressure management plan with daily medication, reduced salt intake, and follow-up monitoring.",
+      medicines: [
+        { id: "med-1", name: "Telmisartan 40 mg", timing: "Once every morning", purpose: "Supports blood pressure control" },
+        { id: "med-2", name: "Amlodipine 5 mg", timing: "Once at night", purpose: "Keeps blood pressure steady" },
+      ],
+      sideEffects: ["Lightheadedness", "Ankle swelling", "Tiredness when standing suddenly"],
+      warningSigns: ["Severe headache", "Chest discomfort", "Shortness of breath with dizziness"],
+      checklist: [
+        { id: "check-1", label: "Take morning blood pressure tablet", reminderText: "Take medicine at 8 AM" },
+        { id: "check-2", label: "Measure blood pressure before lunch", reminderText: "Check blood pressure today" },
+        { id: "check-3", label: "Reduce salty packaged food today", reminderText: "Healthy meal reminder" },
+      ],
+      followUp: ["Track readings for 5 days", "Review sooner if headache or chest discomfort appears"],
+      voiceText:
+        "This looks like a blood pressure plan. Take Telmisartan in the morning, Amlodipine at night, reduce salt, and track your blood pressure regularly.",
+    },
+  },
+  hi: {
+    infection: {
+      diagnosis: "बुखार के साथ ऊपरी श्वसन संक्रमण",
+      summary:
+        "यह प्रिस्क्रिप्शन बुखार में राहत, पानी की मात्रा और सांस या बुखार बढ़ने पर फॉलो-अप पर केंद्रित एक छोटे संक्रमण प्लान जैसा लगता है।",
+      medicines: [
+        { id: "med-1", name: "Paracetamol 650 mg", timing: "बुखार होने पर, भोजन के बाद", purpose: "बुखार और बदन दर्द कम करता है" },
+        { id: "med-2", name: "Azithromycin 500 mg", timing: "रात के खाने के बाद, 3 दिन तक रोज़ एक बार", purpose: "संभावित संक्रमण का इलाज" },
+      ],
+      sideEffects: ["हल्की पेट खराबी", "ढीला पेट", "बुखार ज़्यादा होने पर सुस्ती"],
+      warningSigns: ["सांस लेने में दिक्कत", "102 F से अधिक बुखार 2 दिन से ज़्यादा", "बहुत कमजोरी या भ्रम"],
+      checklist: [
+        { id: "check-1", label: "आज रात खाने के बाद Azithromycin लें", reminderText: "रात 8 बजे दवा लें" },
+        { id: "check-2", label: "कम से कम 8 गिलास पानी पिएं", reminderText: "पानी पीने का रिमाइंडर" },
+        { id: "check-3", label: "कल सुबह फिर से तापमान जांचें", reminderText: "तापमान जांचने का रिमाइंडर" },
+      ],
+      followUp: ["अगर बुखार जारी रहे तो 2-3 दिन में डॉक्टर से रिव्यू कराएं", "सांस बढ़े तो तुरंत इलाज लें"],
+      voiceText:
+        "यह प्रिस्क्रिप्शन ऊपरी श्वसन संक्रमण जैसा लगता है। बुखार में Paracetamol लें, रात के खाने के बाद Azithromycin लें, पानी अधिक पिएं और सांस की दिक्कत पर ध्यान दें।",
+    },
+    diabetes: {
+      diagnosis: "टाइप 2 डायबिटीज़ फॉलो-अप प्लान",
+      summary:
+        "यह ब्लड शुगर कंट्रोल की योजना लगती है जिसमें रोज़ की दवा, खाने का समय, पानी और चक्कर या ज़्यादा थकान पर नज़र शामिल है।",
+      medicines: [
+        { id: "med-1", name: "Metformin 500 mg", timing: "नाश्ते और रात के खाने के बाद", purpose: "ब्लड शुगर कंट्रोल में मदद" },
+        { id: "med-2", name: "Glimepiride 1 mg", timing: "नाश्ते से 15 मिनट पहले", purpose: "सुबह की शुगर कंट्रोल में मदद" },
+      ],
+      sideEffects: ["लो शुगर जैसा महसूस होना", "मतली", "हल्की पेट असहजता"],
+      warningSigns: ["पसीने के साथ कंपकंपी", "धुंधला दिखना", "बहुत प्यास और कमजोरी"],
+      checklist: [
+        { id: "check-1", label: "नाश्ते से पहले Glimepiride लें", reminderText: "सुबह 8 बजे दवा लें" },
+        { id: "check-2", label: "रात के खाने के बाद शुगर रीडिंग लिखें", reminderText: "डिनर के बाद शुगर जांचें" },
+        { id: "check-3", label: "पास में हल्का स्नैक रखें", reminderText: "स्नैक साथ रखने का रिमाइंडर" },
+      ],
+      followUp: ["एक हफ्ते में फास्टिंग शुगर रिव्यू करें", "बार-बार लो शुगर हो तो डॉक्टर से संपर्क करें"],
+      voiceText:
+        "यह डायबिटीज़ फॉलो-अप प्लान लगता है। नाश्ते से पहले Glimepiride लें, खाने के बाद Metformin लें और शुगर व पानी की मात्रा पर नज़र रखें।",
+    },
+    bloodPressure: {
+      diagnosis: "हाई ब्लड प्रेशर मेंटेनेंस प्लान",
+      summary:
+        "यह रोज़ की दवा, कम नमक और फॉलो-अप मॉनिटरिंग वाला ब्लड प्रेशर मैनेजमेंट प्लान लगता है।",
+      medicines: [
+        { id: "med-1", name: "Telmisartan 40 mg", timing: "हर सुबह एक बार", purpose: "ब्लड प्रेशर कंट्रोल में मदद" },
+        { id: "med-2", name: "Amlodipine 5 mg", timing: "हर रात एक बार", purpose: "ब्लड प्रेशर स्थिर रखता है" },
+      ],
+      sideEffects: ["चक्कर जैसा लगना", "टखनों में सूजन", "अचानक खड़े होने पर थकान"],
+      warningSigns: ["तेज़ सिरदर्द", "सीने में असहजता", "चक्कर के साथ सांस फूलना"],
+      checklist: [
+        { id: "check-1", label: "सुबह की ब्लड प्रेशर दवा लें", reminderText: "सुबह 8 बजे दवा लें" },
+        { id: "check-2", label: "दोपहर से पहले ब्लड प्रेशर मापें", reminderText: "आज ब्लड प्रेशर जांचें" },
+        { id: "check-3", label: "आज नमक वाला पैकेज्ड खाना कम करें", reminderText: "हेल्दी मील रिमाइंडर" },
+      ],
+      followUp: ["5 दिन तक रीडिंग ट्रैक करें", "सिरदर्द या सीने में असहजता हो तो जल्दी रिव्यू करें"],
+      voiceText:
+        "यह ब्लड प्रेशर प्लान लगता है। सुबह Telmisartan लें, रात में Amlodipine लें, नमक कम करें और ब्लड प्रेशर नियमित जांचें।",
+    },
+  },
+  gu: {
+    infection: {
+      diagnosis: "તાવ સાથે ઉપરના શ્વસન માર્ગનો ચેપ",
+      summary:
+        "આ પ્રિસ્ક્રિપ્શન તાવમાં રાહત, પાણીનું પ્રમાણ અને શ્વાસ અથવા તાવ વધે તો ફોલો-અપ પર ધ્યાન આપતો ટૂંકો ચેપ પ્લાન લાગે છે.",
+      medicines: [
+        { id: "med-1", name: "Paracetamol 650 mg", timing: "તાવ હોય ત્યારે, ભોજન પછી", purpose: "તાવ અને શરીરના દુખાવામાં રાહત" },
+        { id: "med-2", name: "Azithromycin 500 mg", timing: "રાત્રે ભોજન પછી, 3 દિવસ માટે રોજ એક વાર", purpose: "સંભવિત ચેપનો ઉપચાર" },
+      ],
+      sideEffects: ["હળવો પેટ બગડવો", "ઢીલા સ્ટૂલ", "તાવ વધારે હોય ત્યારે સુસ્તી"],
+      warningSigns: ["શ્વાસ લેવામાં તકલીફ", "2 દિવસથી વધુ 102 F કરતા વધારે તાવ", "ઘણી નબળાઇ અથવા ગૂંચવણ"],
+      checklist: [
+        { id: "check-1", label: "આજ રાત્રે ભોજન પછી Azithromycin લો", reminderText: "રાત્રે 8 વાગ્યે દવા લો" },
+        { id: "check-2", label: "ઓછામાં ઓછા 8 ગ્લાસ પાણી પીવો", reminderText: "પાણી પીવાનું રિમાઇન્ડર" },
+        { id: "check-3", label: "કાલે સવારે ફરી તાપમાન ચેક કરો", reminderText: "તાપમાન ચેક કરવાનો રિમાઇન્ડર" },
+      ],
+      followUp: ["તાવ ચાલુ રહે તો 2-3 દિવસમાં ડૉક્ટર સાથે રિવ્યુ કરો", "શ્વાસ વધારે થાય તો તાત્કાલિક સારવાર લો"],
+      voiceText:
+        "આ પ્રિસ્ક્રિપ્શન ઉપરના શ્વસન ચેપ માટે હોઈ શકે છે. તાવ માટે Paracetamol લો, રાત્રે Azithromycin લો, વધારે પાણી પીવો અને શ્વાસની તકલીફ પર નજર રાખો.",
+    },
+    diabetes: {
+      diagnosis: "ટાઇપ 2 ડાયાબિટીસ ફોલો-અપ પ્લાન",
+      summary:
+        "આ બ્લડ સુગર કંટ્રોલ પ્લાન લાગે છે જેમાં રોજની દવા, ભોજનનો સમય, પાણી અને ચક્કર અથવા વધારે થાક પર નજર રાખવાની સલાહ છે.",
+      medicines: [
+        { id: "med-1", name: "Metformin 500 mg", timing: "નાસ્તા અને રાત્રિભોજન પછી", purpose: "બ્લડ સુગર કંટ્રોલમાં મદદ કરે છે" },
+        { id: "med-2", name: "Glimepiride 1 mg", timing: "નાસ્તા પહેલા 15 મિનિટ", purpose: "સવારના ગ્લુકોઝ કંટ્રોલમાં મદદ" },
+      ],
+      sideEffects: ["લો શુગર જેવી લાગણી", "મિતલી", "હળવો પેટમાં અસ્વસ્થતા"],
+      warningSigns: ["કંપારી સાથે પરસેવો", "ધૂંધળું દેખાવું", "ઘણી તરસ સાથે નબળાઈ"],
+      checklist: [
+        { id: "check-1", label: "નાસ્તા પહેલા Glimepiride લો", reminderText: "સવારે 8 વાગ્યે દવા લો" },
+        { id: "check-2", label: "રાત્રે ભોજન પછી શુગર રીડિંગ નોંધો", reminderText: "ડિનર પછી શુગર ચેક કરો" },
+        { id: "check-3", label: "પાસે નાનું નાસ્તું રાખો", reminderText: "સ્નેક સાથે રાખવાનો રિમાઇન્ડર" },
+      ],
+      followUp: ["એક અઠવાડિયામાં ફાસ્ટિંગ શુગર રિવ્યુ કરો", "વારંવાર લો શુગર થાય તો ડૉક્ટરને સંપર્ક કરો"],
+      voiceText:
+        "આ ડાયાબિટીસ ફોલો-અપ પ્લાન લાગે છે. નાસ્તા પહેલા Glimepiride લો, ભોજન પછી Metformin લો અને સુગર તેમજ પાણી પર નજર રાખો.",
+    },
+    bloodPressure: {
+      diagnosis: "ઉચ્ચ રક્તચાપ મેંટેનન્સ પ્લાન",
+      summary:
+        "આ રોજની દવા, ઓછું મીઠું અને અનુસરણ મોનિટરિંગ સાથેનો બ્લડ પ્રેશર મેનેજમેન્ટ પ્લાન લાગે છે.",
+      medicines: [
+        { id: "med-1", name: "Telmisartan 40 mg", timing: "દર સવાર એક વાર", purpose: "બ્લડ પ્રેશર કંટ્રોલમાં મદદ" },
+        { id: "med-2", name: "Amlodipine 5 mg", timing: "દરરોજ રાત્રે એક વાર", purpose: "બ્લડ પ્રેશર સ્થિર રાખે છે" },
+      ],
+      sideEffects: ["ચક્કર આવવું", "પગની સૂજન", "ઝટપટ ઊભા થવાથી થાક"],
+      warningSigns: ["જોરદાર માથાનો દુખાવો", "છાતીમાં અસ્વસ્થતા", "ચક્કર સાથે શ્વાસ ફૂલવો"],
+      checklist: [
+        { id: "check-1", label: "સવારની બ્લડ પ્રેશર દવા લો", reminderText: "સવારે 8 વાગ્યે દવા લો" },
+        { id: "check-2", label: "બપોર પહેલા બ્લડ પ્રેશર માપો", reminderText: "આજે બ્લડ પ્રેશર ચેક કરો" },
+        { id: "check-3", label: "આજે ખારા પેકેજ્ડ ખોરાક ઓછા લો", reminderText: "હેલ્ધી મીલ રિમાઇન્ડર" },
+      ],
+      followUp: ["5 દિવસ સુધી રીડિંગ ટ્રેક કરો", "માથાનો દુખાવો અથવા છાતીમાં અસ્વસ્થતા હોય તો વહેલો રિવ્યુ કરો"],
+      voiceText:
+        "આ બ્લડ પ્રેશર પ્લાન લાગે છે. સવારે Telmisartan લો, રાત્રે Amlodipine લો, મીઠું ઓછું કરો અને બ્લડ પ્રેશર નિયમિત માપો.",
+    },
+  },
+};
+
+const ageSummary = {
+  en: (age: string) => `For ${age}-year-old patients, gentle hydration and follow-up are especially important.`,
+  hi: (age: string) => `${age} वर्ष के मरीजों के लिए पानी और फॉलो-अप पर विशेष ध्यान देना महत्वपूर्ण है।`,
+  gu: (age: string) => `${age} વર્ષની ઉંમરના દર્દીઓ માટે પાણી અને ફોલો-અપ પર ખાસ ધ્યાન આપવું મહત્વપૂર્ણ છે.`,
+} satisfies Record<Language, (age: string) => string>;
+
+export function detectAnalysisKind(prescriptionText: string): AnalysisKind {
+  const normalized = prescriptionText.toLowerCase();
+  if (normalized.includes("metformin") || normalized.includes("glimepiride") || normalized.includes("sugar")) {
+    return "diabetes";
+  }
+  if (
+    normalized.includes("telmisartan") ||
+    normalized.includes("amlodipine") ||
+    normalized.includes("blood pressure") ||
+    normalized.includes("bp")
+  ) {
+    return "bloodPressure";
+  }
+  return "infection";
+}
+
+export function getAnalysisResult(language: Language, age: string, prescriptionText: string): AnalysisResult {
+  const result = analysisCatalog[language][detectAnalysisKind(prescriptionText)];
+  if (!age.trim()) {
+    return result;
+  }
+
+  return {
+    ...result,
+    summary: `${result.summary} ${ageSummary[language](age.trim())}`,
+  };
+}
+
+export function getOcrSample(language: Language): string {
+  return ocrSamples[language];
+}
+
+export function getHomeVoiceText(language: Language): string {
+  return homeVoiceText[language];
+}
+
+export function getSettingsVoiceText(language: Language): string {
+  return settingsVoiceText[language];
+}
